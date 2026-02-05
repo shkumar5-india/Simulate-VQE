@@ -28,7 +28,6 @@ st.markdown("""
 
 st.markdown('<div class="main-header">QUANTUM MOLECULAR SOLVER [VQE ENGINE]</div>', unsafe_allow_html=True)
 
-# --- CORE ENGINE ---
 def execute_vqe_engine(mol_type):
     if mol_type == "H2":
         d_range = np.arange(0.5, 1.1, 0.1)
@@ -51,26 +50,27 @@ def execute_vqe_engine(mol_type):
     status = st.status(f"Executing Real VQE for {mol_type}...", expanded=True)
 
     for d in d_range:
-        status.update(label=f"Computing Ground State: {d:.3f} Å", state="running")
+        status.update(label=f"Solving Hamiltonian at: {d:.3f} Å", state="running")
         driver = PySCFDriver(atom=f"{atom_symbol} 0 0 0; H 0 0 {d}", basis="sto3g")
         problem = driver.run()
 
+        # Step 1: Baseline Offset (Nuclear Repulsion)
+        total_offset = problem.nuclear_repulsion_energy
+        
         if use_active_space:
+            # Step 2: Extract Frozen Core Energy manually before transformation
             transformer = ActiveSpaceTransformer(num_electrons=2, num_spatial_orbitals=2)
+            
+            # Catch core energy BEFORE transform (reliable in 0.7+)
+            core_energy = 0.0
+            if hasattr(transformer, 'occupied_core_energies'):
+                core_val = transformer.occupied_core_energies
+                core_energy = np.sum(core_val) if isinstance(core_val, (list, np.ndarray)) else core_val
+            
             problem = transformer.transform(problem)
             
-        # --- THE ULTIMATE OFFSET FIX ---
-        # Total energy = Electronic + Constant Offset (Nuclear + Frozen Core)
-        # Try finding the constant offset in standard Qiskit Nature 0.7+ locations
-        total_offset = 0.0
-        try:
-            total_offset = problem.nuclear_repulsion_energy
-            if hasattr(problem, 'hamiltonian') and hasattr(problem.hamiltonian, 'constant_energy'):
-                total_offset = problem.hamiltonian.constant_energy
-            elif hasattr(problem, 'constant_energy'):
-                total_offset = problem.constant_energy
-        except:
-            pass
+            # Step 3: Combine with Nuclear Repulsion
+            total_offset = problem.nuclear_repulsion_energy + core_energy
 
         ansatz = UCCSD(
             problem.num_spatial_orbitals, 
@@ -87,13 +87,13 @@ def execute_vqe_engine(mol_type):
         hamiltonian = mapper.map(problem.second_q_ops()[0])
         result = vqe.compute_minimum_eigenvalue(hamiltonian)
 
-        # FINAL ENERGY CALCULATION
-        final_energy = float(result.eigenvalue.real) + total_offset
+        # TOTAL ENERGY = VQE Electronic + (Nuclear + Core Offset)
+        total_energy = float(result.eigenvalue.real) + total_offset
         all_dist.append(d)
-        all_energ.append(final_energy)
+        all_energ.append(total_energy)
 
-        if final_energy < best_energy:
-            best_energy = final_energy
+        if total_energy < best_energy:
+            best_energy = total_energy
             best_conv = [e + total_offset for e in temp_conv]
             best_ansatz = ansatz
 
@@ -104,7 +104,7 @@ def execute_vqe_engine(mol_type):
 
 # --- UI CONTROL FLOW ---
 mol_choice = st.selectbox("Select Target System", ["H2", "LiH"])
-run_btn = st.button("EXECUTE QUANTUM ANALYSIS", use_container_width=True)
+run_btn = st.button("RUN QUANTUM ANALYSIS", use_container_width=True)
 
 if run_btn:
     d, e, conv, b_dist, m_e, circ, m_name = execute_vqe_engine(mol_choice)
@@ -128,7 +128,7 @@ if run_btn:
     with g2:
         fig2, ax2 = plt.subplots(figsize=(6, 4))
         ax2.plot(conv, color='#10b981', linewidth=2)
-        ax2.set_title("Minimum Energy Convergence Path", fontweight='bold')
+        ax2.set_title("Optimization Path @ Equilibrium", fontweight='bold')
         ax2.set_xlabel("Iteration"); ax2.set_ylabel("Total Energy (Ha)")
         ax2.grid(True, alpha=0.3)
         st.pyplot(fig2)
