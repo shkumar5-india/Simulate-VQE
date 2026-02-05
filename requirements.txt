@@ -1,0 +1,7 @@
+streamlit
+numpy
+matplotlib
+qiskit
+qiskit-nature
+qiskit-algorithms
+pyscf
