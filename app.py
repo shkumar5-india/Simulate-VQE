@@ -56,10 +56,13 @@ def execute_vqe_engine(mol_type):
 
         core_offset = 0
         if use_active_space:
-            transformer = ActiveSpaceTransformer(2, 2)
+            transformer = ActiveSpaceTransformer(num_electrons=2, num_spatial_orbitals=2)
             problem = transformer.transform(problem)
-            # FIX: Summing core energies to handle Attribute/Type errors
-            core_offset = sum(problem.active_full_config.occupied_core_energies) if hasattr(problem, 'active_full_config') else sum(transformer.occupied_core_energies)
+            
+            # --- ROBUST CORE ENERGY FIX ---
+            raw_core = transformer.occupied_core_energies
+            # If it's a list/array, sum it; if it's a float, use it directly
+            core_offset = np.sum(raw_core) if isinstance(raw_core, (list, np.ndarray)) else raw_core
 
         ansatz = UCCSD(problem.num_spatial_orbitals, problem.num_particles, mapper,
                        initial_state=HartreeFock(problem.num_spatial_orbitals, problem.num_particles, mapper))
@@ -71,8 +74,8 @@ def execute_vqe_engine(mol_type):
         hamiltonian = mapper.map(problem.second_q_ops()[0])
         result = vqe.compute_minimum_eigenvalue(hamiltonian)
 
-        # TOTAL ENERGY calculation
-        total_energy = result.eigenvalue.real + problem.nuclear_repulsion_energy + core_offset
+        # Correct Energy Addition
+        total_energy = float(result.eigenvalue.real) + problem.nuclear_repulsion_energy + core_offset
         all_dist.append(d)
         all_energ.append(total_energy)
 
@@ -93,15 +96,14 @@ run_btn = st.button("RUN QUANTUM ANALYSIS", use_container_width=True)
 if run_btn:
     d, e, conv, b_dist, m_e, circ, m_name = execute_vqe_engine(mol_choice)
     
-    # Metrics
+    # Summary Table with Mapper
     st.markdown("### 📊 SIMULATION METRICS")
     m1, m2, m3, m4 = st.columns(4)
     m1.markdown(f'<div class="metric-card"><p class="spec-label">Bond Length</p><p class="spec-value">{b_dist:.3f} Å</p></div>', unsafe_allow_html=True)
     m2.markdown(f'<div class="metric-card"><p class="spec-label">Ground State Energy</p><p class="spec-value">{m_e:.5f} Ha</p></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="metric-card"><p class="spec-label">Transpiled Depth</p><p class="spec-value">{circ.depth()}</p></div>', unsafe_allow_html=True)
+    m3.markdown(f'<div class="metric-card"><p class="spec-label">Circuit Depth</p><p class="spec-value">{circ.depth()}</p></div>', unsafe_allow_html=True)
     m4.markdown(f'<div class="metric-card"><p class="spec-label">Logical Qubits</p><p class="spec-value">{circ.num_qubits}</p></div>', unsafe_allow_html=True)
 
-    # Graphs
     st.markdown("---")
     g1, g2 = st.columns(2)
     with g1:
@@ -113,20 +115,19 @@ if run_btn:
     with g2:
         fig2, ax2 = plt.subplots(figsize=(6, 4))
         ax2.plot(conv, color='#10b981', linewidth=2)
-        ax2.set_title("Minimum Energy State Convergence", fontweight='bold')
+        ax2.set_title("VQE Optimization Path", fontweight='bold')
         ax2.set_xlabel("Iteration"); ax2.set_ylabel("Total Energy (Ha)")
         st.pyplot(fig2)
 
-    # Gate Analysis & Circuit with Mapper Info
-    st.markdown("### 🛠 QUANTUM HARDWARE DIAGNOSTICS")
+    st.markdown("### 🛠 HARDWARE & ALGORITHM DIAGNOSTICS")
     t1, t2 = st.columns(2)
     with t1:
         st.table({
-            "Hardware Parameter": ["Qubits", "Circuit Depth", "Quantum Mapper", "Optimizer"], 
-            "Simulation Value": [circ.num_qubits, circ.depth(), m_name, "SLSQP"]
+            "Parameter": ["Quantum Mapper", "Qubits", "Circuit Depth", "Optimizer"], 
+            "Value": [m_name, circ.num_qubits, circ.depth(), "SLSQP"]
         })
     with t2:
-        st.table({"Quantum Gate Type": list(circ.count_ops().keys()), "Instruction Count": list(circ.count_ops().values())})
+        st.table({"Gate Type": list(circ.count_ops().keys()), "Instruction Count": list(circ.count_ops().values())})
 
     with st.expander("🔬 DECOMPOSED QUANTUM CIRCUIT ARCHITECTURE"):
         st.pyplot(circ.draw('mpl', scale=0.8))
