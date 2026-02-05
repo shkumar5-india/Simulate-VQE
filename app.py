@@ -28,22 +28,21 @@ st.markdown("""
 
 st.markdown('<div class="main-header">QUANTUM MOLECULAR SOLVER [VQE ENGINE]</div>', unsafe_allow_html=True)
 
-# --- CORE ENGINE (FIXED CONVERGENCE TRACKING) ---
 def execute_vqe_engine(mol_type):
     if mol_type == "H2":
-        d_range = np.arange(0.5, 1.1, 0.05)
+        d_range = np.arange(0.5, 1.1, 0.1)
         mapper = ParityMapper(num_particles=(1, 1))
+        mapper_name = "ParityMapper (2-Qubit Reduction)"
         atom_symbol = "H"
         use_active_space = False
     else:
         d_range = [1.2, 1.4, 1.595, 1.8, 2.0]
         mapper = JordanWignerMapper()
+        mapper_name = "JordanWignerMapper"
         atom_symbol = "Li"
         use_active_space = True
 
     all_dist, all_energ = [], []
-    
-    # Correct Tracking Logic
     best_energy = float("inf")
     best_conv = []
     best_ansatz = None
@@ -52,50 +51,47 @@ def execute_vqe_engine(mol_type):
 
     for d in d_range:
         status.update(label=f"Solving Hamiltonian at: {d:.3f} Å", state="running")
-
         driver = PySCFDriver(atom=f"{atom_symbol} 0 0 0; H 0 0 {d}", basis="sto3g")
         problem = driver.run()
 
-        core_energy = 0
+        core_offset = 0
         if use_active_space:
             transformer = ActiveSpaceTransformer(2, 2)
             problem = transformer.transform(problem)
-            core_energy = transformer.occupied_core_energies
+            # FIX: Summing core energies to handle Attribute/Type errors
+            core_offset = sum(problem.active_full_config.occupied_core_energies) if hasattr(problem, 'active_full_config') else sum(transformer.occupied_core_energies)
 
         ansatz = UCCSD(problem.num_spatial_orbitals, problem.num_particles, mapper,
                        initial_state=HartreeFock(problem.num_spatial_orbitals, problem.num_particles, mapper))
 
         temp_conv = []
-        def callback(count, params, mean, std=None):
-            temp_conv.append(mean)
+        def callback(count, params, mean, std=None): temp_conv.append(mean)
 
         vqe = VQE(Estimator(), ansatz, SLSQP(), callback=callback)
         hamiltonian = mapper.map(problem.second_q_ops()[0])
         result = vqe.compute_minimum_eigenvalue(hamiltonian)
 
-        total_energy = result.eigenvalue.real + problem.nuclear_repulsion_energy + core_energy
+        # TOTAL ENERGY calculation
+        total_energy = result.eigenvalue.real + problem.nuclear_repulsion_energy + core_offset
         all_dist.append(d)
         all_energ.append(total_energy)
 
-        # BUG FIX: Precise tracking of the global minimum energy state
         if total_energy < best_energy:
             best_energy = total_energy
-            best_conv = [e + problem.nuclear_repulsion_energy + core_energy for e in temp_conv]
+            best_conv = [e + problem.nuclear_repulsion_energy + core_offset for e in temp_conv]
             best_ansatz = ansatz
 
     status.update(label="VQE Simulation Complete", state="complete", expanded=False)
-    
-    # Hardware Transpilation
     hw_circ = transpile(best_ansatz, basis_gates=['cx','rz','sx','x'], optimization_level=1)
     
-    return all_dist, all_energ, best_conv, all_dist[np.argmin(all_energ)], best_energy, hw_circ
+    return all_dist, all_energ, best_conv, all_dist[np.argmin(all_energ)], best_energy, hw_circ, mapper_name
 
 # --- UI INTERFACE ---
 mol_choice = st.selectbox("Select Target System", ["H2", "LiH"])
 run_btn = st.button("RUN QUANTUM ANALYSIS", use_container_width=True)
 
 if run_btn:
-    d, e, conv, b_dist, m_e, circ = execute_vqe_engine(mol_choice)
+    d, e, conv, b_dist, m_e, circ, m_name = execute_vqe_engine(mol_choice)
     
     # Metrics
     st.markdown("### 📊 SIMULATION METRICS")
@@ -112,26 +108,25 @@ if run_btn:
         fig1, ax1 = plt.subplots(figsize=(6, 4))
         ax1.plot(d, e, 'o-', color='#2563eb', linewidth=2)
         ax1.set_title("Potential Energy Surface (PES)", fontweight='bold')
-        ax1.set_xlabel("Interatomic Distance (Å)"); ax1.set_ylabel("Total Energy (Ha)")
-        ax1.grid(True, alpha=0.3)
+        ax1.set_xlabel("Distance (Å)"); ax1.set_ylabel("Total Energy (Ha)")
         st.pyplot(fig1)
     with g2:
         fig2, ax2 = plt.subplots(figsize=(6, 4))
         ax2.plot(conv, color='#10b981', linewidth=2)
         ax2.set_title("Minimum Energy State Convergence", fontweight='bold')
         ax2.set_xlabel("Iteration"); ax2.set_ylabel("Total Energy (Ha)")
-        ax2.grid(True, alpha=0.3)
         st.pyplot(fig2)
 
-    # Gate Analysis & Circuit
+    # Gate Analysis & Circuit with Mapper Info
     st.markdown("### 🛠 QUANTUM HARDWARE DIAGNOSTICS")
     t1, t2 = st.columns(2)
     with t1:
-        st.table({"Hardware Parameter": ["Qubits", "Circuit Depth", "Basis Set", "Optimizer"], 
-                  "Simulation Value": [circ.num_qubits, circ.depth(), "STO-3G", "SLSQP"]})
+        st.table({
+            "Hardware Parameter": ["Qubits", "Circuit Depth", "Quantum Mapper", "Optimizer"], 
+            "Simulation Value": [circ.num_qubits, circ.depth(), m_name, "SLSQP"]
+        })
     with t2:
-        st.table({"Quantum Gate Type": list(circ.count_ops().keys()), 
-                  "Instruction Count": list(circ.count_ops().values())})
+        st.table({"Quantum Gate Type": list(circ.count_ops().keys()), "Instruction Count": list(circ.count_ops().values())})
 
     with st.expander("🔬 DECOMPOSED QUANTUM CIRCUIT ARCHITECTURE"):
         st.pyplot(circ.draw('mpl', scale=0.8))
