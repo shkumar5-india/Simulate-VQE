@@ -28,7 +28,7 @@ st.markdown("""
 
 st.markdown('<div class="main-header">QUANTUM MOLECULAR SOLVER [VQE ENGINE]</div>', unsafe_allow_html=True)
 
-# --- CORE VQE ENGINE (STABLE OFFSET LOGIC) ---
+# --- CORE ENGINE ---
 def execute_vqe_engine(mol_type):
     if mol_type == "H2":
         d_range = np.arange(0.5, 1.1, 0.1)
@@ -37,7 +37,6 @@ def execute_vqe_engine(mol_type):
         atom_symbol = "H"
         use_active_space = False
     else:
-        # LiH equilibrium search range
         d_range = [1.2, 1.4, 1.595, 1.8, 2.0]
         mapper = JordanWignerMapper()
         mapper_name = "JordanWignerMapper"
@@ -54,19 +53,25 @@ def execute_vqe_engine(mol_type):
     for d in d_range:
         status.update(label=f"Computing Ground State: {d:.3f} Å", state="running")
         driver = PySCFDriver(atom=f"{atom_symbol} 0 0 0; H 0 0 {d}", basis="sto3g")
-        problem = driver.run()
+        base_problem = driver.run()
 
-        # MANAGE OFFSETS
+        core_energy_offset = 0.0
+        
         if use_active_space:
             transformer = ActiveSpaceTransformer(num_electrons=2, num_spatial_orbitals=2)
-            # 1. Grab Core Energy from Transformer BEFORE it gets lost
-            frozen_core_energy = transformer.occupied_core_energies
-            # 2. Transform the problem
-            problem = transformer.transform(problem)
-            # 3. Sum offsets: Electronic Core + Nuclear Repulsion
-            total_offset = problem.nuclear_repulsion_energy + frozen_core_energy
+            # TRANSFORM returns a new problem object that contains core energy
+            problem = transformer.transform(base_problem)
+            
+            # --- THE FIX: Extracting core energy from the transformed problem ---
+            if hasattr(problem, 'occupied_core_energies'):
+                # Handle both list and scalar cases
+                core_val = problem.occupied_core_energies
+                core_energy_offset = np.sum(core_val) if isinstance(core_val, (list, np.ndarray)) else core_val
         else:
-            total_offset = problem.nuclear_repulsion_energy
+            problem = base_problem
+
+        # Total Constant Offset = Nuclear Repulsion + Frozen Core Energy
+        total_offset = problem.nuclear_repulsion_energy + core_energy_offset
 
         ansatz = UCCSD(
             problem.num_spatial_orbitals, 
@@ -83,20 +88,17 @@ def execute_vqe_engine(mol_type):
         hamiltonian = mapper.map(problem.second_q_ops()[0])
         result = vqe.compute_minimum_eigenvalue(hamiltonian)
 
-        # Final Energy = VQE Output + (Nuclear Repulsion + Frozen Core)
+        # FINAL CALCULATION: result.eigenvalue is only active electronic energy
         total_energy = float(result.eigenvalue.real) + total_offset
         all_dist.append(d)
         all_energ.append(total_energy)
 
-        # Track the minimum energy state globally
         if total_energy < best_energy:
             best_energy = total_energy
             best_conv = [e + total_offset for e in temp_conv]
             best_ansatz = ansatz
 
     status.update(label="VQE Simulation Complete", state="complete", expanded=False)
-    
-    # Generate hardware-level circuit depth/info
     hw_circ = transpile(best_ansatz, basis_gates=['cx', 'rz', 'sx', 'x'], optimization_level=1)
     
     return all_dist, all_energ, best_conv, all_dist[np.argmin(all_energ)], best_energy, hw_circ, mapper_name
@@ -108,7 +110,6 @@ run_btn = st.button("EXECUTE ANALYSIS", use_container_width=True)
 if run_btn:
     d, e, conv, b_dist, m_e, circ, m_name = execute_vqe_engine(mol_choice)
     
-    # 1. Metrics Card Display
     st.markdown("### 📊 SIMULATION METRICS")
     m1, m2, m3, m4 = st.columns(4)
     m1.markdown(f'<div class="metric-card"><p class="spec-label">Bond Length</p><p class="spec-value">{b_dist:.3f} Å</p></div>', unsafe_allow_html=True)
@@ -116,35 +117,30 @@ if run_btn:
     m3.markdown(f'<div class="metric-card"><p class="spec-label">Transpiled Depth</p><p class="spec-value">{circ.depth()}</p></div>', unsafe_allow_html=True)
     m4.markdown(f'<div class="metric-card"><p class="spec-label">Logical Qubits</p><p class="spec-value">{circ.num_qubits}</p></div>', unsafe_allow_html=True)
 
-    # 2. Science Graphs
     st.markdown("---")
     g1, g2 = st.columns(2)
     with g1:
         fig1, ax1 = plt.subplots(figsize=(6, 4))
         ax1.plot(d, e, 'o-', color='#2563eb', linewidth=2)
         ax1.set_title("Potential Energy Surface (PES)", fontweight='bold')
-        ax1.set_xlabel("Interatomic Distance (Å)"); ax1.set_ylabel("Total Energy (Ha)")
-        ax1.grid(True, alpha=0.3)
+        ax1.set_xlabel("Distance (Å)"); ax1.set_ylabel("Total Energy (Ha)")
         st.pyplot(fig1)
     with g2:
         fig2, ax2 = plt.subplots(figsize=(6, 4))
         ax2.plot(conv, color='#10b981', linewidth=2)
-        ax2.set_title("VQE Convergence (at Equilibrium)", fontweight='bold')
-        ax2.set_xlabel("Optimization Step"); ax2.set_ylabel("Total Energy (Ha)")
-        ax2.grid(True, alpha=0.3)
+        ax2.set_title("VQE Optimization Path @ Equilibrium", fontweight='bold')
+        ax2.set_xlabel("Iteration"); ax2.set_ylabel("Total Energy (Ha)")
         st.pyplot(fig2)
 
-    # 3. Hardware Diagnostics
     st.markdown("### 🛠 HARDWARE & ALGORITHM DIAGNOSTICS")
     t1, t2 = st.columns(2)
     with t1:
         st.table({
-            "Parameter": ["Quantum Mapper", "Circuit depth", "Basis Set", "Optimizer"], 
-            "Value": [m_name, circ.depth(), "STO-3G", "SLSQP"]
+            "Parameter": ["Quantum Mapper", "Logical Qubits", "Circuit Depth", "Optimizer"], 
+            "Value": [m_name, circ.num_qubits, circ.depth(), "SLSQP"]
         })
     with t2:
         st.table({"Gate Type": list(circ.count_ops().keys()), "Instruction Count": list(circ.count_ops().values())})
 
-    # 4. Circuit Diagram
-    with st.expander("🔬 DECOMPOSED QUANTUM CIRCUIT ARCHITECTURE (Transpiled)"):
+    with st.expander("🔬 DECOMPOSED QUANTUM CIRCUIT ARCHITECTURE"):
         st.pyplot(circ.draw('mpl', scale=0.8))
