@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuantumVQE Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background: #0f172a; color: white; font-family: 'Inter', sans-serif; }
+        .glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        .gradient-text { background: linear-gradient(90deg, #00d2ff, #3a7bd5); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .loader { border-top-color: #00d2ff; animation: spinner 1.5s linear infinite; }
+        @keyframes spinner { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="p-8">
+    <div class="max-w-6xl mx-auto">
+        <header class="flex justify-between items-center mb-12">
+            <div>
+                <h1 class="text-4xl font-bold gradient-text">Quantum Chemistry Lab</h1>
+                <p class="text-slate-400">VQE Bond Length Prediction Dashboard</p>
+            </div>
+            <div class="space-x-4">
+                <button onclick="run('H2')" class="px-6 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg transition">Simulate H2</button>
+                <button onclick="run('LiH')" class="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg transition">Simulate LiH</button>
+            </div>
+        </header>
+
+        <div id="loading" class="hidden fixed inset-0 bg-black/50 flex flex-col items-center justify-center z-50">
+            <div class="loader w-16 h-16 border-4 border-slate-700 rounded-full mb-4"></div>
+            <p class="text-xl font-medium">Executing Quantum Circuit...</p>
+        </div>
+
+        <div id="results" class="hidden grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="glass p-6 rounded-2xl">
+                <p class="text-slate-400 text-sm">Best Bond Length</p>
+                <h2 id="res-dist" class="text-3xl font-mono mt-2 text-blue-400">--</h2>
+            </div>
+            <div class="glass p-6 rounded-2xl">
+                <p class="text-slate-400 text-sm">Ground State Energy</p>
+                <h2 id="res-energy" class="text-3xl font-mono mt-2 text-emerald-400">--</h2>
+            </div>
+            <div class="glass p-6 rounded-2xl">
+                <p class="text-slate-400 text-sm">Circuit Complexity (CX)</p>
+                <h2 id="res-gates" class="text-3xl font-mono mt-2 text-purple-400">--</h2>
+            </div>
+
+            <div class="md:col-span-2 glass p-4 rounded-2xl flex flex-col items-center">
+                <h3 class="mb-4 font-semibold">Potential Energy Surface</h3>
+                <img id="img-pes" src="" class="rounded-lg w-full">
+            </div>
+            <div class="glass p-4 rounded-2xl flex flex-col items-center">
+                <h3 class="mb-4 font-semibold">Optimization Convergence</h3>
+                <img id="img-conv" src="" class="rounded-lg w-full">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function run(molecule) {
+            document.getElementById('loading').classList.remove('hidden');
+            try {
+                const response = await fetch(`/run/${molecule}`);
+                const data = await response.json();
+                
+                document.getElementById('res-dist').innerText = data.bond_length + " Å";
+                document.getElementById('res-energy').innerText = data.energy.toFixed(5) + " Ha";
+                document.getElementById('res-gates').innerText = data.gates;
+                document.getElementById('img-pes').src = `data:image/png;base64,${data.pes_plot}`;
+                document.getElementById('img-conv').src = `data:image/png;base64,${data.conv_plot}`;
+                
+                document.getElementById('results').classList.remove('hidden');
+            } catch (e) { alert("Error running simulation"); }
+            document.getElementById('loading').classList.add('hidden');
+        }
+    </script>
+</body>
+</html>
