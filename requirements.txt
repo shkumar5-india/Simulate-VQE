@@ -1,7 +1,8 @@
 streamlit
 numpy
 matplotlib
-qiskit
+qiskit>=1.0.0
 qiskit-nature
 qiskit-algorithms
 pyscf
+qiskit-ibm-runtime
