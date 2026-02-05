@@ -1,11 +1,8 @@
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
-import time
-
-# --- FIXED QISKIT 1.x COMPATIBLE IMPORTS ---
 from qiskit import transpile
-from qiskit.primitives import StatevectorEstimator as Estimator # Corrected for VQE stability
+from qiskit.primitives import StatevectorEstimator as Estimator
 from qiskit_algorithms import VQE
 from qiskit_algorithms.optimizers import SLSQP
 
@@ -14,131 +11,127 @@ from qiskit_nature.second_q.mappers import ParityMapper, JordanWignerMapper
 from qiskit_nature.second_q.transformers import ActiveSpaceTransformer
 from qiskit_nature.second_q.circuit.library import UCCSD, HartreeFock
 
-# --- UI CONFIG (Cyberpunk Dash) ---
-st.set_page_config(page_title="QUANTUM VQE ENGINE", layout="wide", initial_sidebar_state="collapsed")
+# --- UI CONFIG ---
+st.set_page_config(page_title="QUANTUM VQE LAB", layout="wide")
 
 st.markdown("""
     <style>
-    #MainMenu, footer, header {visibility: hidden;}
-    .stApp { background: #010409; font-family: 'monospace'; }
-    .glass-card {
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid #00d2ff55;
-        border-radius: 12px;
-        padding: 20px;
-        margin-bottom: 15px;
+    .main-header { font-size: 2.2rem; font-weight: 700; color: #1e293b; text-align: center; margin-bottom: 30px; }
+    .metric-card {
+        background: white; padding: 20px; border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; text-align: center;
     }
-    .neon-text { color: #00d2ff; text-shadow: 0 0 10px #00d2ff; font-weight: bold; }
-    .spec-box { border-left: 3px solid #00ff88; padding-left: 15px; margin: 10px 0; }
+    .spec-label { color: #64748b; font-size: 0.85rem; text-transform: uppercase; font-weight: 600; }
+    .spec-value { color: #0f172a; font-size: 1.5rem; font-weight: 700; }
     </style>
     """, unsafe_allow_html=True)
 
-st.markdown('<h1 style="text-align:center; color:white; letter-spacing:5px;">VQE NEURAL CORE</h1>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">QUANTUM MOLECULAR SOLVER [VQE ENGINE]</div>', unsafe_allow_html=True)
 
-# --- SIMULATION ENGINE ---
-def run_vqe_engine(mol_type):
+# --- CORE ENGINE (FIXED CONVERGENCE TRACKING) ---
+def execute_vqe_engine(mol_type):
     if mol_type == "H2":
-        d_range = np.arange(0.5, 1.1, 0.1)
+        d_range = np.arange(0.5, 1.1, 0.05)
         mapper = ParityMapper(num_particles=(1, 1))
-        target, core_e, atom = 0.70, 0, "H"
+        atom_symbol = "H"
+        use_active_space = False
     else:
-        d_range = [1.2, 1.595, 2.0]
+        d_range = [1.2, 1.4, 1.595, 1.8, 2.0]
         mapper = JordanWignerMapper()
-        target, core_e, atom = 1.595, -7.783, "Li"
+        atom_symbol = "Li"
+        use_active_space = True
 
-    all_distances = []
-    all_energies = []
-    final_ansatz = None
+    all_dist, all_energ = [], []
     
-    status_spot = st.empty()
-    plot_spot = st.empty()
+    # Correct Tracking Logic
+    best_energy = float("inf")
+    best_conv = []
+    best_ansatz = None
+
+    status = st.status(f"Executing Real VQE for {mol_type}...", expanded=True)
 
     for d in d_range:
-        status_spot.markdown(f'<p class="neon-text">TARGETING MOLECULAR STATE: {d:.3f} Å ...</p>', unsafe_allow_html=True)
-        
-        driver = PySCFDriver(atom=f"{atom} 0 0 0; H 0 0 {d}", basis="sto3g")
-        prob = driver.run()
-        if mol_type == "LiH":
-            prob = ActiveSpaceTransformer(2, 2).transform(prob)
-        
-        ansatz = UCCSD(prob.num_spatial_orbitals, prob.num_particles, mapper,
-                       initial_state=HartreeFock(prob.num_spatial_orbitals, prob.num_particles, mapper))
-        
-        # Real-time UI Callback
-        iter_energies = []
-        def callback(count, params, mean, std=None): # Added default std
-            # Logic to handle convergence animation
-            iter_energies.append(mean + prob.nuclear_repulsion_energy + core_e)
-            with plot_spot.container():
-                c1, c2 = st.columns(2)
-                with c1:
-                    fig, ax = plt.subplots(figsize=(5,3))
-                    plt.style.use('dark_background')
-                    ax.plot(all_distances, all_energies, 'o-', color='#00d2ff')
-                    ax.set_title("PES SCAN PROGRESS")
-                    st.pyplot(fig)
-                    plt.close()
-                with c2:
-                    fig2, ax2 = plt.subplots(figsize=(5,3))
-                    ax2.plot(iter_energies, color='#00ff88', lw=2)
-                    ax2.set_title(f"LIVE OPTIMIZATION @ {d}Å")
-                    st.pyplot(fig2)
-                    plt.close()
+        status.update(label=f"Solving Hamiltonian at: {d:.3f} Å", state="running")
 
-        # Initialize Estimator and VQE
-        estimator = Estimator()
-        vqe = VQE(estimator, ansatz, SLSQP(), callback=callback if abs(d-target)<0.05 else None)
-        
-        hamiltonian = mapper.map(prob.second_q_ops()[0])
-        res = vqe.compute_minimum_eigenvalue(hamiltonian)
-        
-        curr_e = res.eigenvalue.real + prob.nuclear_repulsion_energy + core_e
-        all_distances.append(d)
-        all_energies.append(curr_e)
-        
-        if abs(d-target)<0.05:
-            final_ansatz = ansatz
+        driver = PySCFDriver(atom=f"{atom_symbol} 0 0 0; H 0 0 {d}", basis="sto3g")
+        problem = driver.run()
 
-    status_spot.empty()
-    hw_circ = transpile(final_ansatz, basis_gates=['cx','rz','sx','x'], optimization_level=1)
-    return all_distances, all_energies, target, min(all_energies), hw_circ
+        core_energy = 0
+        if use_active_space:
+            transformer = ActiveSpaceTransformer(2, 2)
+            problem = transformer.transform(problem)
+            core_energy = transformer.occupied_core_energies
 
-# --- UI CONTROLS ---
-l, r = st.columns([1, 4])
-with l:
-    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    choice = st.selectbox("QUANTUM TARGET", ["H2", "LiH"])
-    btn = st.button("INITIALIZE ENGINE")
-    st.markdown('</div>', unsafe_allow_html=True)
+        ansatz = UCCSD(problem.num_spatial_orbitals, problem.num_particles, mapper,
+                       initial_state=HartreeFock(problem.num_spatial_orbitals, problem.num_particles, mapper))
 
-if btn:
-    d_list, e_list, target_val, min_e, circ = run_vqe_engine(choice)
+        temp_conv = []
+        def callback(count, params, mean, std=None):
+            temp_conv.append(mean)
+
+        vqe = VQE(Estimator(), ansatz, SLSQP(), callback=callback)
+        hamiltonian = mapper.map(problem.second_q_ops()[0])
+        result = vqe.compute_minimum_eigenvalue(hamiltonian)
+
+        total_energy = result.eigenvalue.real + problem.nuclear_repulsion_energy + core_energy
+        all_dist.append(d)
+        all_energ.append(total_energy)
+
+        # BUG FIX: Precise tracking of the global minimum energy state
+        if total_energy < best_energy:
+            best_energy = total_energy
+            best_conv = [e + problem.nuclear_repulsion_energy + core_energy for e in temp_conv]
+            best_ansatz = ansatz
+
+    status.update(label="VQE Simulation Complete", state="complete", expanded=False)
     
+    # Hardware Transpilation
+    hw_circ = transpile(best_ansatz, basis_gates=['cx','rz','sx','x'], optimization_level=1)
+    
+    return all_dist, all_energ, best_conv, all_dist[np.argmin(all_energ)], best_energy, hw_circ
+
+# --- UI INTERFACE ---
+mol_choice = st.selectbox("Select Target System", ["H2", "LiH"])
+run_btn = st.button("RUN QUANTUM ANALYSIS", use_container_width=True)
+
+if run_btn:
+    d, e, conv, b_dist, m_e, circ = execute_vqe_engine(mol_choice)
+    
+    # Metrics
+    st.markdown("### 📊 SIMULATION METRICS")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.markdown(f'<div class="metric-card"><p class="spec-label">Bond Length</p><p class="spec-value">{b_dist:.3f} Å</p></div>', unsafe_allow_html=True)
+    m2.markdown(f'<div class="metric-card"><p class="spec-label">Ground State Energy</p><p class="spec-value">{m_e:.5f} Ha</p></div>', unsafe_allow_html=True)
+    m3.markdown(f'<div class="metric-card"><p class="spec-label">Transpiled Depth</p><p class="spec-value">{circ.depth()}</p></div>', unsafe_allow_html=True)
+    m4.markdown(f'<div class="metric-card"><p class="spec-label">Logical Qubits</p><p class="spec-value">{circ.num_qubits}</p></div>', unsafe_allow_html=True)
+
+    # Graphs
     st.markdown("---")
-    res1, res2 = st.columns([2, 1])
-    
-    with res1:
-        st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-        st.subheader("🛠 HARDWARE SPECS")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(f'<div class="spec-box"><b>QUBITS</b><br><span class="neon-text">{circ.num_qubits}</span></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="spec-box"><b>DEPTH</b><br><span class="neon-text">{circ.depth()}</span></div>', unsafe_allow_html=True)
-        with c2:
-            st.markdown(f'<div class="spec-box"><b>CNOT GATES</b><br><span class="neon-text">{circ.count_ops().get("cx", 0)}</span></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="spec-box"><b>TOTAL GATES</b><br><span class="neon-text">{sum(circ.count_ops().values())}</span></div>', unsafe_allow_html=True)
-        with c3:
-            st.markdown(f'<div class="spec-box"><b>OPTIMIZER</b><br><span class="neon-text">SLSQP</span></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="spec-box"><b>MAPPING</b><br><span class="neon-text">VQE-HYBRID</span></div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    g1, g2 = st.columns(2)
+    with g1:
+        fig1, ax1 = plt.subplots(figsize=(6, 4))
+        ax1.plot(d, e, 'o-', color='#2563eb', linewidth=2)
+        ax1.set_title("Potential Energy Surface (PES)", fontweight='bold')
+        ax1.set_xlabel("Interatomic Distance (Å)"); ax1.set_ylabel("Total Energy (Ha)")
+        ax1.grid(True, alpha=0.3)
+        st.pyplot(fig1)
+    with g2:
+        fig2, ax2 = plt.subplots(figsize=(6, 4))
+        ax2.plot(conv, color='#10b981', linewidth=2)
+        ax2.set_title("Minimum Energy State Convergence", fontweight='bold')
+        ax2.set_xlabel("Iteration"); ax2.set_ylabel("Total Energy (Ha)")
+        ax2.grid(True, alpha=0.3)
+        st.pyplot(fig2)
 
-    with res2:
-        st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-        st.subheader("💎 FINAL STATE")
-        st.metric("BOND LENGTH", f"{target_val} Å")
-        st.metric("ENERGY", f"{min_e:.5f} Ha")
-        st.markdown('</div>', unsafe_allow_html=True)
+    # Gate Analysis & Circuit
+    st.markdown("### 🛠 QUANTUM HARDWARE DIAGNOSTICS")
+    t1, t2 = st.columns(2)
+    with t1:
+        st.table({"Hardware Parameter": ["Qubits", "Circuit Depth", "Basis Set", "Optimizer"], 
+                  "Simulation Value": [circ.num_qubits, circ.depth(), "STO-3G", "SLSQP"]})
+    with t2:
+        st.table({"Quantum Gate Type": list(circ.count_ops().keys()), 
+                  "Instruction Count": list(circ.count_ops().values())})
 
-    with st.expander("🔬 CIRCUIT TOPOLOGY"):
-        fig_c = circ.draw('mpl', style='iqp-dark')
-        st.pyplot(fig_c)
+    with st.expander("🔬 DECOMPOSED QUANTUM CIRCUIT ARCHITECTURE"):
+        st.pyplot(circ.draw('mpl', scale=0.8))
