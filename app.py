@@ -54,24 +54,20 @@ def execute_vqe_engine(mol_type):
         driver = PySCFDriver(atom=f"{atom_symbol} 0 0 0; H 0 0 {d}", basis="sto3g")
         problem = driver.run()
 
-        core_offset = 0
         if use_active_space:
             transformer = ActiveSpaceTransformer(num_electrons=2, num_spatial_orbitals=2)
-            # TRANSFORM returns a new problem object
             problem = transformer.transform(problem)
-            
-            # --- THE FIX: Extracting core energy from the transformed problem ---
-            if hasattr(problem, 'metadata') and 'frozen_core_energy' in problem.metadata:
-                core_offset = problem.metadata['frozen_core_energy']
-            else:
-                # Fallback for different Qiskit Nature versions
-                try:
-                    core_offset = problem.constant_energy
-                except:
-                    core_offset = 0
 
-        ansatz = UCCSD(problem.num_spatial_orbitals, problem.num_particles, mapper,
-                       initial_state=HartreeFock(problem.num_spatial_orbitals, problem.num_particles, mapper))
+        # IMPORTANT: In Qiskit Nature 0.7+, constant_energy contains 
+        # BOTH Nuclear Repulsion AND Frozen Core Energy offsets.
+        total_offset = problem.constant_energy
+
+        ansatz = UCCSD(
+            problem.num_spatial_orbitals, 
+            problem.num_particles, 
+            mapper,
+            initial_state=HartreeFock(problem.num_spatial_orbitals, problem.num_particles, mapper)
+        )
 
         temp_conv = []
         def callback(count, params, mean, std=None): 
@@ -81,15 +77,14 @@ def execute_vqe_engine(mol_type):
         hamiltonian = mapper.map(problem.second_q_ops()[0])
         result = vqe.compute_minimum_eigenvalue(hamiltonian)
 
-        # TOTAL ENERGY = Electronic + Nuclear Repulsion (constant_energy includes nuclear + frozen core in new versions)
-        # However, to be safe across versions, we use this logic:
-        total_energy = float(result.eigenvalue.real) + problem.nuclear_repulsion_energy + core_offset
+        # FINAL ENERGY = VQE Result + All Offsets
+        total_energy = float(result.eigenvalue.real) + total_offset
         all_dist.append(d)
         all_energ.append(total_energy)
 
         if total_energy < best_energy:
             best_energy = total_energy
-            best_conv = [e + problem.nuclear_repulsion_energy + core_offset for e in temp_conv]
+            best_conv = [e + total_offset for e in temp_conv]
             best_ansatz = ansatz
 
     status.update(label="VQE Simulation Complete", state="complete", expanded=False)
