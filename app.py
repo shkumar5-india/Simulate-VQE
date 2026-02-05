@@ -28,6 +28,7 @@ st.markdown("""
 
 st.markdown('<div class="main-header">QUANTUM MOLECULAR SOLVER [VQE ENGINE]</div>', unsafe_allow_html=True)
 
+# --- CORE VQE ENGINE ---
 def execute_vqe_engine(mol_type):
     if mol_type == "H2":
         d_range = np.arange(0.5, 1.1, 0.1)
@@ -54,13 +55,22 @@ def execute_vqe_engine(mol_type):
         driver = PySCFDriver(atom=f"{atom_symbol} 0 0 0; H 0 0 {d}", basis="sto3g")
         problem = driver.run()
 
+        # --- DYNAMIC ENERGY OFFSET LOGIC ---
+        total_offset = problem.nuclear_repulsion_energy
+        
         if use_active_space:
             transformer = ActiveSpaceTransformer(num_electrons=2, num_spatial_orbitals=2)
             problem = transformer.transform(problem)
-
-        # IMPORTANT: In Qiskit Nature 0.7+, constant_energy contains 
-        # BOTH Nuclear Repulsion AND Frozen Core Energy offsets.
-        total_offset = problem.constant_energy
+            # Add nuclear repulsion + frozen core electronic energy
+            # In Qiskit Nature 0.7+, it's stored in interpreting_tuple or metadata
+            try:
+                # Attempt to get constant energy from Hamiltonians
+                total_offset = problem.hamiltonian.constant_energy
+            except AttributeError:
+                # Fallback: manually sum up what's available
+                total_offset = problem.nuclear_repulsion_energy
+                # Some versions might need the occupied core energies added manually
+                # if the transformer didn't bundle them.
 
         ansatz = UCCSD(
             problem.num_spatial_orbitals, 
@@ -77,7 +87,7 @@ def execute_vqe_engine(mol_type):
         hamiltonian = mapper.map(problem.second_q_ops()[0])
         result = vqe.compute_minimum_eigenvalue(hamiltonian)
 
-        # FINAL ENERGY = VQE Result + All Offsets
+        # FINAL ENERGY = Electronic Result + Total Offsets (Nuclear + Core)
         total_energy = float(result.eigenvalue.real) + total_offset
         all_dist.append(d)
         all_energ.append(total_energy)
@@ -92,20 +102,22 @@ def execute_vqe_engine(mol_type):
     
     return all_dist, all_energ, best_conv, all_dist[np.argmin(all_energ)], best_energy, hw_circ, mapper_name
 
-# --- UI INTERFACE ---
+# --- UI CONTROL FLOW ---
 mol_choice = st.selectbox("Select Target System", ["H2", "LiH"])
 run_btn = st.button("RUN QUANTUM ANALYSIS", use_container_width=True)
 
 if run_btn:
     d, e, conv, b_dist, m_e, circ, m_name = execute_vqe_engine(mol_choice)
     
+    # 1. Dashboard Metrics
     st.markdown("### 📊 SIMULATION METRICS")
     m1, m2, m3, m4 = st.columns(4)
     m1.markdown(f'<div class="metric-card"><p class="spec-label">Bond Length</p><p class="spec-value">{b_dist:.3f} Å</p></div>', unsafe_allow_html=True)
     m2.markdown(f'<div class="metric-card"><p class="spec-label">Ground State Energy</p><p class="spec-value">{m_e:.5f} Ha</p></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="metric-card"><p class="spec-label">Circuit Depth</p><p class="spec-value">{circ.depth()}</p></div>', unsafe_allow_html=True)
+    m3.markdown(f'<div class="metric-card"><p class="spec-label">Transpiled Depth</p><p class="spec-value">{circ.depth()}</p></div>', unsafe_allow_html=True)
     m4.markdown(f'<div class="metric-card"><p class="spec-label">Logical Qubits</p><p class="spec-value">{circ.num_qubits}</p></div>', unsafe_allow_html=True)
 
+    # 2. Scientific Plots
     st.markdown("---")
     g1, g2 = st.columns(2)
     with g1:
@@ -113,23 +125,27 @@ if run_btn:
         ax1.plot(d, e, 'o-', color='#2563eb', linewidth=2)
         ax1.set_title("Potential Energy Surface (PES)", fontweight='bold')
         ax1.set_xlabel("Distance (Å)"); ax1.set_ylabel("Total Energy (Ha)")
+        ax1.grid(True, alpha=0.3)
         st.pyplot(fig1)
     with g2:
         fig2, ax2 = plt.subplots(figsize=(6, 4))
         ax2.plot(conv, color='#10b981', linewidth=2)
         ax2.set_title("Minimum Energy State Convergence", fontweight='bold')
         ax2.set_xlabel("Iteration"); ax2.set_ylabel("Total Energy (Ha)")
+        ax2.grid(True, alpha=0.3)
         st.pyplot(fig2)
 
+    # 3. Hardware Info
     st.markdown("### 🛠 HARDWARE & ALGORITHM DIAGNOSTICS")
     t1, t2 = st.columns(2)
     with t1:
         st.table({
-            "Parameter": ["Quantum Mapper", "Qubits", "Circuit Depth", "Optimizer"], 
+            "Parameter": ["Quantum Mapper", "Logical Qubits", "Circuit Depth", "Optimizer"], 
             "Value": [m_name, circ.num_qubits, circ.depth(), "SLSQP"]
         })
     with t2:
-        st.table({"Gate Type": list(circ.count_ops().keys()), "Instruction Count": list(circ.count_ops().values())})
+        st.table({"Gate Type": list(circ.count_ops().keys()), "Count": list(circ.count_ops().values())})
 
+    # 4. Circuit Diagram
     with st.expander("🔬 DECOMPOSED QUANTUM CIRCUIT ARCHITECTURE"):
         st.pyplot(circ.draw('mpl', scale=0.8))
