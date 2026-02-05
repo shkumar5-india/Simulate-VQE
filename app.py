@@ -57,24 +57,32 @@ def execute_vqe_engine(mol_type):
         core_offset = 0
         if use_active_space:
             transformer = ActiveSpaceTransformer(num_electrons=2, num_spatial_orbitals=2)
+            # TRANSFORM returns a new problem object
             problem = transformer.transform(problem)
             
-            # --- ROBUST CORE ENERGY FIX ---
-            raw_core = transformer.occupied_core_energies
-            # If it's a list/array, sum it; if it's a float, use it directly
-            core_offset = np.sum(raw_core) if isinstance(raw_core, (list, np.ndarray)) else raw_core
+            # --- THE FIX: Extracting core energy from the transformed problem ---
+            if hasattr(problem, 'metadata') and 'frozen_core_energy' in problem.metadata:
+                core_offset = problem.metadata['frozen_core_energy']
+            else:
+                # Fallback for different Qiskit Nature versions
+                try:
+                    core_offset = problem.constant_energy
+                except:
+                    core_offset = 0
 
         ansatz = UCCSD(problem.num_spatial_orbitals, problem.num_particles, mapper,
                        initial_state=HartreeFock(problem.num_spatial_orbitals, problem.num_particles, mapper))
 
         temp_conv = []
-        def callback(count, params, mean, std=None): temp_conv.append(mean)
+        def callback(count, params, mean, std=None): 
+            temp_conv.append(mean)
 
         vqe = VQE(Estimator(), ansatz, SLSQP(), callback=callback)
         hamiltonian = mapper.map(problem.second_q_ops()[0])
         result = vqe.compute_minimum_eigenvalue(hamiltonian)
 
-        # Correct Energy Addition
+        # TOTAL ENERGY = Electronic + Nuclear Repulsion (constant_energy includes nuclear + frozen core in new versions)
+        # However, to be safe across versions, we use this logic:
         total_energy = float(result.eigenvalue.real) + problem.nuclear_repulsion_energy + core_offset
         all_dist.append(d)
         all_energ.append(total_energy)
@@ -85,7 +93,7 @@ def execute_vqe_engine(mol_type):
             best_ansatz = ansatz
 
     status.update(label="VQE Simulation Complete", state="complete", expanded=False)
-    hw_circ = transpile(best_ansatz, basis_gates=['cx','rz','sx','x'], optimization_level=1)
+    hw_circ = transpile(best_ansatz, basis_gates=['cx', 'rz', 'sx', 'x'], optimization_level=1)
     
     return all_dist, all_energ, best_conv, all_dist[np.argmin(all_energ)], best_energy, hw_circ, mapper_name
 
@@ -96,7 +104,6 @@ run_btn = st.button("RUN QUANTUM ANALYSIS", use_container_width=True)
 if run_btn:
     d, e, conv, b_dist, m_e, circ, m_name = execute_vqe_engine(mol_choice)
     
-    # Summary Table with Mapper
     st.markdown("### 📊 SIMULATION METRICS")
     m1, m2, m3, m4 = st.columns(4)
     m1.markdown(f'<div class="metric-card"><p class="spec-label">Bond Length</p><p class="spec-value">{b_dist:.3f} Å</p></div>', unsafe_allow_html=True)
@@ -115,7 +122,7 @@ if run_btn:
     with g2:
         fig2, ax2 = plt.subplots(figsize=(6, 4))
         ax2.plot(conv, color='#10b981', linewidth=2)
-        ax2.set_title("VQE Optimization Path", fontweight='bold')
+        ax2.set_title("Minimum Energy State Convergence", fontweight='bold')
         ax2.set_xlabel("Iteration"); ax2.set_ylabel("Total Energy (Ha)")
         st.pyplot(fig2)
 
