@@ -2,10 +2,13 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+
+# Corrected Qiskit 1.0+ Imports
 from qiskit import transpile
-from qiskit.primitives import Estimator
+from qiskit.primitives import StatevectorEstimator as Estimator # Updated for modern Qiskit
 from qiskit_algorithms import VQE
 from qiskit_algorithms.optimizers import SLSQP
+
 from qiskit_nature.second_q.drivers import PySCFDriver
 from qiskit_nature.second_q.mappers import ParityMapper, JordanWignerMapper
 from qiskit_nature.second_q.transformers import ActiveSpaceTransformer
