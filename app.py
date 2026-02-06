@@ -177,7 +177,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">🧪 QUANTUM MOLECULAR SOLVER [VQE ENGINE]</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">QUANTUM MOLECULAR SOLVER [VQE ENGINE]</div>', unsafe_allow_html=True)
 
 def execute_vqe_engine(mol_type):
     # System Configuration
