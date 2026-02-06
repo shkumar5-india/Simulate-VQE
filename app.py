@@ -331,7 +331,7 @@ import pandas as pd
 from qiskit import transpile
 from qiskit.primitives import StatevectorEstimator as Estimator
 from qiskit_algorithms import VQE
-from qiskit_algorithms.optimizers import COBYLA  # SLSQP nunchi COBYLA ki marchanu
+from qiskit_algorithms.optimizers import SLSQP, COBYLA
 
 from qiskit_nature.second_q.drivers import PySCFDriver
 from qiskit_nature.second_q.mappers import ParityMapper, JordanWignerMapper
@@ -339,7 +339,7 @@ from qiskit_nature.second_q.transformers import ActiveSpaceTransformer
 from qiskit_nature.second_q.circuit.library import UCCSD, HartreeFock
 
 # --- UI CONFIG ---
-st.set_page_config(page_title="QUANTUM VQE LAB (COBYLA)", layout="wide")
+st.set_page_config(page_title="QUANTUM VQE LAB", layout="wide")
 
 st.markdown("""
     <style>
@@ -348,72 +348,65 @@ st.markdown("""
         background: white; padding: 20px; border-radius: 10px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; text-align: center;
     }
-    .spec-label { color: #64748b; font-size: 0.85rem; text-transform: uppercase; font-weight: 600; margin-bottom: 5px; }
+    .spec-label { color: #64748b; font-size: 0.85rem; text-transform: uppercase; font-weight: 600; }
     .spec-value { color: #0f172a; font-size: 1.5rem; font-weight: 700; }
     </style>
     """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">🧪 QUANTUM MOLECULAR SOLVER [COBYLA ENGINE]</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🧪 MULTI-OPTIMIZER QUANTUM SOLVER</div>', unsafe_allow_html=True)
 
-def execute_vqe_engine(mol_type):
-    # System Configuration
+def execute_vqe_engine(mol_type, opt_type):
+    # Molecule & Mapping Configuration
     if mol_type == "H2":
-        d_range = np.arange(0.5, 2.1, 0.4) # Slightly wider steps for H2
+        d_range = np.arange(0.5, 2.1, 0.4)
         mapper = ParityMapper(num_particles=(1, 1))
         mapper_name = "ParityMapper"
         atom_symbol = "H"
         use_active_space = False
-    else:  # LiH
-        d_range = [1.2, 1.4, 1.6, 2.0]
+    else: # LiH
+        d_range = [1.2, 1.5, 1.8, 2.1]
         mapper = JordanWignerMapper()
         mapper_name = "JordanWignerMapper"
         atom_symbol = "Li"
         use_active_space = True
+
+    # Optimizer Selection
+    optimizer = SLSQP(maxiter=100) if opt_type == "SLSQP" else COBYLA(maxiter=150)
 
     all_dist, all_energ = [], []
     best_overall_energy = float("inf")
     best_conv_history = []
     best_ansatz = None
     
-    status = st.status(f"Starting COBYLA Optimization for {mol_type}...", expanded=True)
+    status = st.status(f"Running VQE with {opt_type} for {mol_type}...", expanded=True)
 
     for d in d_range:
-        status.update(label=f"Current Distance: {d:.3f} Å", state="running")
+        status.update(label=f"Calculating Energy for Distance: {d:.3f} Å", state="running")
         
-        # 1. Driver Setup
-        atom_str = f"{atom_symbol} 0 0 0; H 0 0 {d}"
-        driver = PySCFDriver(atom=atom_str, basis="sto3g")
+        # 1. Driver & Problem Setup
+        driver = PySCFDriver(atom=f"{atom_symbol} 0 0 0; H 0 0 {d}", basis="sto3g")
         problem = driver.run()
-        
-        # 2. Extract Energy Offsets
         energy_shift = sum(problem.hamiltonian.constants.values())
-        hamiltonian_ops = problem.hamiltonian.second_q_op()
+        ham_op = problem.hamiltonian.second_q_op()
         
         if use_active_space:
             transformer = ActiveSpaceTransformer(num_electrons=2, num_spatial_orbitals=2)
             problem = transformer.transform(problem)
-            hamiltonian_ops = problem.hamiltonian.second_q_op()
+            ham_op = problem.hamiltonian.second_q_op()
             energy_shift = sum(problem.hamiltonian.constants.values())
 
-        # 3. Ansatz
+        # 2. Ansatz & VQE
         ansatz = UCCSD(
-            problem.num_spatial_orbitals, 
-            problem.num_particles, 
-            mapper,
+            problem.num_spatial_orbitals, problem.num_particles, mapper,
             initial_state=HartreeFock(problem.num_spatial_orbitals, problem.num_particles, mapper)
         )
 
-        # 4. VQE Execution with COBYLA
         temp_history = []
         def callback(count, params, mean, std=None): 
             temp_history.append(mean + energy_shift)
 
-        # Gradient-free COBYLA optimizer
-        optimizer = COBYLA(maxiter=150)
-        
         vqe = VQE(Estimator(), ansatz, optimizer, callback=callback)
-        qubit_op = mapper.map(hamiltonian_ops)
-        result = vqe.compute_minimum_eigenvalue(qubit_op)
+        result = vqe.compute_minimum_eigenvalue(mapper.map(ham_op))
 
         total_energy = float(result.eigenvalue.real) + energy_shift
         all_dist.append(d)
@@ -424,50 +417,55 @@ def execute_vqe_engine(mol_type):
             best_conv_history = temp_history
             best_ansatz = ansatz
 
-    status.update(label="Simulation Finished!", state="complete", expanded=False)
-    
+    status.update(label=f"Simulation Complete using {opt_type}!", state="complete", expanded=False)
     hw_circ = transpile(best_ansatz, basis_gates=['cx', 'rz', 'sx', 'x'], optimization_level=1)
-    return all_dist, all_energ, best_conv_history, all_dist[np.argmin(all_energ)], best_overall_energy, hw_circ, mapper_name
+    
+    return all_dist, all_energ, best_conv_history, all_dist[np.argmin(all_energ)], best_overall_energy, hw_circ
 
 # --- UI CONTROLS ---
 with st.sidebar:
-    st.header("VQE Settings")
+    st.header("🔧 Configuration")
     mol_choice = st.selectbox("Target Molecule", ["H2", "LiH"])
-    st.write("**Optimizer:** COBYLA")
-    st.write("**Mode:** Gradient-Free")
+    opt_choice = st.selectbox("Select Optimizer", ["SLSQP", "COBYLA"])
+    st.divider()
+    if opt_choice == "SLSQP":
+        st.caption("SLSQP: Fast, uses gradients. Good for smooth landscapes.")
+    else:
+        st.caption("COBYLA: Gradient-free. Robust against noise.")
 
-run_btn = st.button("RUN QUANTUM ANALYSIS", use_container_width=True, type="primary")
+run_btn = st.button(f"RUN {opt_choice} ANALYSIS", use_container_width=True, type="primary")
 
 if run_btn:
-    d, e, conv, b_dist, m_e, circ, m_name = execute_vqe_engine(mol_choice)
+    d, e, conv, b_dist, m_e, circ = execute_vqe_engine(mol_choice, opt_choice)
     
-    st.markdown("### 📊 SIMULATION RESULTS")
+    # --- METRICS ---
+    st.markdown(f"### 📊 RESULTS: {mol_choice} @ {opt_choice}")
     m1, m2, m3, m4 = st.columns(4)
     m1.markdown(f'<div class="metric-card"><p class="spec-label">Bond Length</p><p class="spec-value">{b_dist:.3f} Å</p></div>', unsafe_allow_html=True)
     m2.markdown(f'<div class="metric-card"><p class="spec-label">Min Energy</p><p class="spec-value">{m_e:.5f} Ha</p></div>', unsafe_allow_html=True)
     m3.markdown(f'<div class="metric-card"><p class="spec-label">Circuit Depth</p><p class="spec-value">{circ.depth()}</p></div>', unsafe_allow_html=True)
-    m4.markdown(f'<div class="metric-card"><p class="spec-label">Logical Qubits</p><p class="spec-value">{circ.num_qubits}</p></div>', unsafe_allow_html=True)
+    m4.markdown(f'<div class="metric-card"><p class="spec-label">Total Gates</p><p class="spec-value">{sum(circ.count_ops().values())}</p></div>', unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.divider()
     
+    # --- PLOTS ---
     col1, col2 = st.columns(2)
     with col1:
         fig1, ax1 = plt.subplots()
-        ax1.plot(d, e, 's--', color='#ef4444', label="COBYLA PES")
+        ax1.plot(d, e, 'o-', color='#6366f1', lw=2)
         ax1.set_title("Potential Energy Surface", fontweight='bold')
         ax1.set_xlabel("Distance (Å)"); ax1.set_ylabel("Energy (Ha)")
-        ax1.grid(True, alpha=0.3); ax1.legend()
+        ax1.grid(True, alpha=0.3)
         st.pyplot(fig1)
         
     with col2:
         fig2, ax2 = plt.subplots()
-        ax2.plot(conv, color='#3b82f6', linewidth=2)
-        ax2.set_title("COBYLA Convergence History", fontweight='bold')
-        ax2.set_xlabel("Function Evaluations"); ax2.set_ylabel("Total Energy (Ha)")
+        ax2.plot(conv, color='#f43f5e', lw=2)
+        ax2.set_title(f"Convergence History ({opt_choice})", fontweight='bold')
+        ax2.set_xlabel("Iterations"); ax2.set_ylabel("Energy (Ha)")
         ax2.grid(True, alpha=0.3)
         st.pyplot(fig2)
 
-    with st.expander("🛠 HARDWARE & CIRCUIT SPECS"):
-        st.markdown(f"**Mapping:** {m_name}")
-        st.table({"Gate": list(circ.count_ops().keys()), "Count": list(circ.count_ops().values())})
-        st.pyplot(circ.draw('mpl', scale=0.7))
+    with st.expander("🔍 TECHNICAL CIRCUIT DATA"):
+        st.table({"Gate Type": list(circ.count_ops().keys()), "Count": list(circ.count_ops().values())})
+        st.pyplot(circ.draw('mpl', scale=0.8))
