@@ -353,49 +353,52 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">🧪 MULTI-OPTIMIZER QUANTUM SOLVER</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🧪 QUANTUM MOLECULAR SOLVER</div>', unsafe_allow_html=True)
 
 def execute_vqe_engine(mol_type, opt_type):
-    # Molecule & Mapping Configuration
+    # Molecule Config
     if mol_type == "H2":
-        d_range = np.arange(0.5, 2.1, 0.4)
+        d_range = np.arange(0.5, 1.5, 0.3)
         mapper = ParityMapper(num_particles=(1, 1))
-        mapper_name = "ParityMapper"
         atom_symbol = "H"
         use_active_space = False
     else: # LiH
+        # Optimized LiH distances to see the curve better
         d_range = [1.2, 1.5, 1.8, 2.1]
         mapper = JordanWignerMapper()
-        mapper_name = "JordanWignerMapper"
         atom_symbol = "Li"
         use_active_space = True
 
-    # Optimizer Selection
-    optimizer = SLSQP(maxiter=100) if opt_type == "SLSQP" else COBYLA(maxiter=150)
+    # --- OPTIMIZER SPECIFIC SETTINGS ---
+    # COBYLA ki rhobeg (step size) set chesthe SLSQP kante different path teesukuntundi
+    if opt_type == "SLSQP":
+        optimizer = SLSQP(maxiter=100, ftol=1e-06)
+    else:
+        optimizer = COBYLA(maxiter=200, rhobeg=0.1) 
 
     all_dist, all_energ = [], []
     best_overall_energy = float("inf")
     best_conv_history = []
     best_ansatz = None
     
-    status = st.status(f"Running VQE with {opt_type} for {mol_type}...", expanded=True)
+    status = st.status(f"Simulating {mol_type} with {opt_type}...", expanded=True)
 
     for d in d_range:
-        status.update(label=f"Calculating Energy for Distance: {d:.3f} Å", state="running")
+        status.update(label=f"Solving for {d:.2f} Å", state="running")
         
-        # 1. Driver & Problem Setup
         driver = PySCFDriver(atom=f"{atom_symbol} 0 0 0; H 0 0 {d}", basis="sto3g")
         problem = driver.run()
+        
+        # Energy Calculation (Including Constants)
+        main_op = problem.hamiltonian.second_q_op()
         energy_shift = sum(problem.hamiltonian.constants.values())
-        ham_op = problem.hamiltonian.second_q_op()
         
         if use_active_space:
             transformer = ActiveSpaceTransformer(num_electrons=2, num_spatial_orbitals=2)
             problem = transformer.transform(problem)
-            ham_op = problem.hamiltonian.second_q_op()
+            main_op = problem.hamiltonian.second_q_op()
             energy_shift = sum(problem.hamiltonian.constants.values())
 
-        # 2. Ansatz & VQE
         ansatz = UCCSD(
             problem.num_spatial_orbitals, problem.num_particles, mapper,
             initial_state=HartreeFock(problem.num_spatial_orbitals, problem.num_particles, mapper)
@@ -403,69 +406,69 @@ def execute_vqe_engine(mol_type, opt_type):
 
         temp_history = []
         def callback(count, params, mean, std=None): 
+            # Storing only electronic mean to see raw optimization
             temp_history.append(mean + energy_shift)
 
         vqe = VQE(Estimator(), ansatz, optimizer, callback=callback)
-        result = vqe.compute_minimum_eigenvalue(mapper.map(ham_op))
+        result = vqe.compute_minimum_eigenvalue(mapper.map(main_op))
 
         total_energy = float(result.eigenvalue.real) + energy_shift
         all_dist.append(d)
         all_energ.append(total_energy)
 
+        # Catch the equilibrium point for the history plot
         if total_energy < best_overall_energy:
             best_overall_energy = total_energy
             best_conv_history = temp_history
             best_ansatz = ansatz
 
-    status.update(label=f"Simulation Complete using {opt_type}!", state="complete", expanded=False)
+    status.update(label="Analysis Finished!", state="complete", expanded=False)
     hw_circ = transpile(best_ansatz, basis_gates=['cx', 'rz', 'sx', 'x'], optimization_level=1)
     
     return all_dist, all_energ, best_conv_history, all_dist[np.argmin(all_energ)], best_overall_energy, hw_circ
 
-# --- UI CONTROLS ---
+# --- UI ---
 with st.sidebar:
-    st.header("🔧 Configuration")
-    mol_choice = st.selectbox("Target Molecule", ["H2", "LiH"])
-    opt_choice = st.selectbox("Select Optimizer", ["SLSQP", "COBYLA"])
-    st.divider()
-    if opt_choice == "SLSQP":
-        st.caption("SLSQP: Fast, uses gradients. Good for smooth landscapes.")
+    st.header("VQE Parameters")
+    mol_choice = st.selectbox("Molecule", ["H2", "LiH"])
+    opt_choice = st.selectbox("Optimizer", ["SLSQP", "COBYLA"])
+    st.markdown("---")
+    st.write(f"**Current Engine:** {opt_choice}")
+    if opt_choice == "COBYLA":
+        st.caption("COBYLA typically takes more evaluations and a jagged path.")
     else:
-        st.caption("COBYLA: Gradient-free. Robust against noise.")
+        st.caption("SLSQP is smoother as it follows the gradient.")
 
-run_btn = st.button(f"RUN {opt_choice} ANALYSIS", use_container_width=True, type="primary")
+run_btn = st.button("EXECUTE SIMULATION", use_container_width=True, type="primary")
 
 if run_btn:
     d, e, conv, b_dist, m_e, circ = execute_vqe_engine(mol_choice, opt_choice)
     
-    # --- METRICS ---
-    st.markdown(f"### 📊 RESULTS: {mol_choice} @ {opt_choice}")
+    # METRICS
+    st.markdown(f"### 🧪 Simulation Metrics ({opt_choice})")
     m1, m2, m3, m4 = st.columns(4)
-    m1.markdown(f'<div class="metric-card"><p class="spec-label">Bond Length</p><p class="spec-value">{b_dist:.3f} Å</p></div>', unsafe_allow_html=True)
-    m2.markdown(f'<div class="metric-card"><p class="spec-label">Min Energy</p><p class="spec-value">{m_e:.5f} Ha</p></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="metric-card"><p class="spec-label">Circuit Depth</p><p class="spec-value">{circ.depth()}</p></div>', unsafe_allow_html=True)
-    m4.markdown(f'<div class="metric-card"><p class="spec-label">Total Gates</p><p class="spec-value">{sum(circ.count_ops().values())}</p></div>', unsafe_allow_html=True)
+    m1.markdown(f'<div class="metric-card"><p class="spec-label">Eq. Distance</p><p class="spec-value">{b_dist:.3f} Å</p></div>', unsafe_allow_html=True)
+    m2.markdown(f'<div class="metric-card"><p class="spec-label">Ground Energy</p><p class="spec-value">{m_e:.6f} Ha</p></div>', unsafe_allow_html=True)
+    m3.markdown(f'<div class="metric-card"><p class="spec-label">Opt. Steps</p><p class="spec-value">{len(conv)}</p></div>', unsafe_allow_html=True)
+    m4.markdown(f'<div class="metric-card"><p class="spec-label">Qubits</p><p class="spec-value">{circ.num_qubits}</p></div>', unsafe_allow_html=True)
 
-    st.divider()
-    
-    # --- PLOTS ---
-    col1, col2 = st.columns(2)
-    with col1:
+    # PLOTS
+    c1, c2 = st.columns(2)
+    with c1:
         fig1, ax1 = plt.subplots()
-        ax1.plot(d, e, 'o-', color='#6366f1', lw=2)
-        ax1.set_title("Potential Energy Surface", fontweight='bold')
-        ax1.set_xlabel("Distance (Å)"); ax1.set_ylabel("Energy (Ha)")
-        ax1.grid(True, alpha=0.3)
+        ax1.plot(d, e, 'o-', color='#3b82f6', label="PES Curve")
+        ax1.set_title("Potential Energy Surface")
+        ax1.set_xlabel("Distance (Å)"); ax1.set_ylabel("Total Energy (Ha)")
+        ax1.grid(alpha=0.2)
         st.pyplot(fig1)
-        
-    with col2:
+
+    with c2:
         fig2, ax2 = plt.subplots()
-        ax2.plot(conv, color='#f43f5e', lw=2)
-        ax2.set_title(f"Convergence History ({opt_choice})", fontweight='bold')
-        ax2.set_xlabel("Iterations"); ax2.set_ylabel("Energy (Ha)")
-        ax2.grid(True, alpha=0.3)
+        # Convergence history will show the real difference
+        ax2.plot(conv, color='#f59e0b', lw=2)
+        ax2.set_title(f"Optimization Path ({opt_choice})")
+        ax2.set_xlabel("Function Evaluations"); ax2.set_ylabel("Energy (Ha)")
+        ax2.grid(alpha=0.2)
         st.pyplot(fig2)
 
-    with st.expander("🔍 TECHNICAL CIRCUIT DATA"):
-        st.table({"Gate Type": list(circ.count_ops().keys()), "Count": list(circ.count_ops().values())})
-        st.pyplot(circ.draw('mpl', scale=0.8))
+    st.info(f"Notice: {opt_choice} completed in {len(conv)} evaluations. Switch to the other optimizer to compare the step count.")
